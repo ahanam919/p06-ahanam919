@@ -276,7 +276,25 @@ class Engine(BaseEngine):
                     if pillow_features.check("libimagequant")
                     else None
                 )
-                self.image = self.image.quantize(method=quantize_method)
+                source_has_alpha = (
+                    "A" in self.image.mode
+                    and min(self.image.getchannel("A").getextrema()) < 255
+                )
+                if source_has_alpha:
+                    # Quantizing drops alpha. Keep the source's fully
+                    # transparent pixels by giving them one palette index
+                    # that no opaque pixel uses, and mark it as transparent.
+                    alpha = self.image.getchannel("A")
+                    self.image = self.image.quantize(
+                        colors=255, method=quantize_method
+                    )
+                    transparent_mask = alpha.point(
+                        lambda a: 255 if a == 0 else 0
+                    )
+                    self.image.paste(255, mask=transparent_mask)
+                    self.image.info["transparency"] = 255
+                else:
+                    self.image = self.image.quantize(method=quantize_method)
 
         ext = requested_extension or self.get_default_extension()
 
