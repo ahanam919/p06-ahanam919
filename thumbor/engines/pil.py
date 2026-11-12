@@ -78,6 +78,7 @@ class Engine(BaseEngine):
         self.original_mode = None
         self.exif = None
         self.iptc = None
+        self.transparent_pixel_mask = None
 
         try:
             if self.context.config.MAX_PIXELS is None or int(
@@ -276,7 +277,24 @@ class Engine(BaseEngine):
                     if pillow_features.check("libimagequant")
                     else None
                 )
+                transparent_mask = None
+                if (
+                    "A" in self.image.mode
+                    and min(self.image.getchannel("A").getextrema()) < 255
+                ):
+                    # GIF carries a single fully transparent palette index.
+                    # Rasterise that mask before quantizing drops the alpha
+                    # channel. PNG needs no help: Pillow writes the palette
+                    # alpha table itself, and setting a plain index here
+                    # would replace it and lose every transparent pixel.
+                    transparent_mask = self.image.getchannel("A").point(
+                        lambda a: 255 if a == 0 else 0
+                    )
+
                 self.image = self.image.quantize(method=quantize_method)
+
+                if transparent_mask is not None:
+                    self.transparent_pixel_mask = transparent_mask
 
         ext = requested_extension or self.get_default_extension()
 
@@ -429,6 +447,32 @@ class Engine(BaseEngine):
             ):
                 # 26.10.22: remove ".heic, .heif" in a month(when pillow_heif get updated)
                 self.image = self.image.convert("RGBA")
+
+            if ext == ".gif" and self.transparent_pixel_mask is not None:
+                # Pillow does not infer a transparent index for an image
+                # that is already indexed. Look at the pixels that were
+                # fully transparent in the source and mark the palette entry
+                # they landed on. Only done for GIF, so PNG stays free to
+                # write its own palette alpha table.
+                sentinel = object()
+                transparent_index = sentinel
+                for value, mask in zip(
+                    self.image.getdata(), self.transparent_pixel_mask.getdata()
+                ):
+                    if not mask:
+                        continue
+                    if transparent_index is sentinel:
+                        transparent_index = value
+                    elif transparent_index != value:
+                        # More than one index: GIF cannot express that.
+                        transparent_index = sentinel
+                        break
+
+                if transparent_index is not sentinel:
+                    palette = self.image.getpalette()
+                    colour = tuple(palette[transparent_index * 3 : transparent_index * 3 + 3])
+                    if colour == (0, 0, 0):
+                        self.image.info["transparency"] = transparent_index
 
             self.image.format = FORMATS.get(
                 ext, FORMATS[self.get_default_extension()]
