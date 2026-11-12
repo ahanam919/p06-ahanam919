@@ -298,6 +298,13 @@ class Transformer:
             )
             crop_height = source_height
 
+        # A target ratio far from the source's can round a crop dimension
+        # down to 0. Cropping to an empty image makes the engine resize
+        # nothing and the request comes back blank, so keep at least one
+        # pixel on each side.
+        crop_width = max(1, crop_width)
+        crop_height = max(1, crop_height)
+
         crop_left = int(
             round(
                 min(
